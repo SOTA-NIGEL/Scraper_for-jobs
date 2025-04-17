@@ -1,117 +1,80 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import schedule
-import time
-import logging
-import argparse
 from datetime import datetime
-import os
+import logging
 
 # ------------------ Logging Setup ------------------ #
 logging.basicConfig(
-    filename='web_scraper.log',
+    filename='job_scraper.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 # ------------------ Scraping Function ------------------ #
-def scrape_jobs():
+def scrape_and_save_jobs():
     url = "https://vacancymail.co.zw/jobs/"
+    
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        logging.info(f"Successfully accessed {url}")
+        logging.info("Successfully accessed the site.")
     except requests.RequestException as e:
         logging.error(f"Network error: {e}")
         return
 
-    try:
-        soup = BeautifulSoup(response.content, 'html.parser')
-        job_listings = soup.find_all('article')
+    soup = BeautifulSoup(response.content, 'html.parser')
+    listings = soup.find_all('a', class_='job-listing')
 
-        jobs = []
-        for job in job_listings:
-            try:
-                title = job.find('h2').get_text(strip=True)
-                company = job.find('span', class_='company').get_text(strip=True)
-                location = job.find('span', class_='location').get_text(strip=True)
-                expiry_date = job.find('span', class_='expiry-date').get_text(strip=True)
-                description_tag = job.find('div', class_='job-description')
-                description = description_tag.get_text(strip=True) if description_tag else "No description provided"
+    jobs = []
 
-                jobs.append({
-                    'Job Title': title,
-                    'Company': company,
-                    'Location': location,
-                    'Expiry Date': expiry_date,
-                    'Job Description': description
-                })
+    for job in listings:
+        try:
+            title = job.find('h3', class_='job-listing-title').get_text(strip=True)
 
-            except AttributeError as e:
-                logging.warning(f"Skipped a job due to missing fields: {e}")
-                continue
+            # Company might be in h4 or only as alt of the logo
+            company_tag = job.find('h4', class_='job-listing-company')
+            if company_tag:
+                company = company_tag.get_text(strip=True)
+            else:
+                logo = job.find('div', class_='job-listing-company-logo').find('img')
+                company = logo['alt'].strip() if logo and 'alt' in logo.attrs else 'Unknown'
 
-        if not jobs:
-            logging.warning("No job listings were scraped.")
-            return
+            location = job.find('li').get_text(strip=True)
+            description = job.find('p', class_='job-listing-text').get_text(strip=True)
 
+            # Get expiry
+            footer = job.find('div', class_='job-listing-footer')
+            expiry = 'N/A'
+            for li in footer.find_all('li'):
+                if 'Expires' in li.text:
+                    expiry = li.get_text(strip=True).replace('Expires', '').strip()
+                    break
+
+            jobs.append({
+                "Job Title": title,
+                "Company": company,
+                "Location": location,
+                "Expiry Date": expiry,
+                "Description": description
+            })
+
+        except Exception as e:
+            logging.warning(f"Skipped a listing due to error: {e}")
+            continue
+
+    if jobs:
         df = pd.DataFrame(jobs)
-        df.drop_duplicates(inplace=True)
-
-        # Create output directory if it doesn't exist
-        output_dir = "data"
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Create filenames with timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        csv_file = os.path.join(output_dir, f'scraped_jobs_{timestamp}.csv')
-        json_file = os.path.join(output_dir, f'scraped_jobs_{timestamp}.json')
+        filename = f"scraped_jobs_{timestamp}.csv"
+        df.to_csv(filename, index=False)
+        logging.info(f"Saved {len(jobs)} jobs to {filename}")
+        print(f"✅ Scraped and saved {len(jobs)} jobs to {filename}")
+    else:
+        logging.warning("No jobs found.")
 
-        df.to_csv(csv_file, index=False)
-        df.to_json(json_file, orient='records', indent=2)
-
-        logging.info(f"Scraped {len(df)} job(s). Saved to {csv_file} and {json_file}.")
-        print(f"✅ Saved CSV: {csv_file}")
-
-    except Exception as e:
-        logging.error(f"Failed to process the page: {e}")
-
-# ------------------ Scheduling ------------------ #
-def schedule_scrape(interval: str):
-    try:
-        if interval == 'daily':
-            schedule.every().day.at("10:00").do(scrape_jobs)
-            logging.info("Scheduled for daily scraping at 10:00.")
-        elif interval == 'hourly':
-            schedule.every().hour.do(scrape_jobs)
-            logging.info("Scheduled for hourly scraping.")
-        else:
-            logging.warning(f"Invalid interval: {interval}")
-            return
-
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-
-    except Exception as e:
-        logging.error(f"Scheduling error: {e}")
-
-# ------------------ CLI Interface ------------------ #
-def parse_args():
-    parser = argparse.ArgumentParser(description="Web scraper for Zimbabwe job listings.")
-    parser.add_argument('--run', action='store_true', help='Run the scraper once immediately.')
-    parser.add_argument('--schedule', choices=['hourly', 'daily'], help='Schedule scraping at intervals.')
-    return parser.parse_args()
-
-# ------------------ Entry Point ------------------ #
+# ------------------ Run Scraper ------------------ #
 if __name__ == "__main__":
-    args = parse_args()
-    if args.run:
-        scrape_jobs()
-    if args.schedule:
-        schedule_scrape(args.schedule)
-    if not args.run and not args.schedule:
-        print("⚠️  Use --run to run immediately or --schedule hourly/daily to schedule it.")
-        logging.warning("No action specified. Use --run or --schedule.")               
+    scrape_and_save_jobs()
+          
         
